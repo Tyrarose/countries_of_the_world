@@ -26,19 +26,37 @@ export type QuizCursor = {
 
 export type QuizDirection = "up" | "down" | "left" | "right";
 
+export type QuizAnswer = {
+  promptAlpha2: string;
+  promptName: string;
+  selectedAlpha2: string;
+  correct: boolean;
+};
+
 export type QuizSession = {
   questions: QuizQuestion[];
   index: number;
   cursor: QuizCursor;
   selectedAlpha2: string | null;
   correctCount: number;
+  answers: QuizAnswer[];
   phase: "question" | "results";
 };
 
+export type MistakeReview = {
+  session: QuizSession;
+  knownBank: QuizCountry[];
+};
+
 export function createQuizSession(
-  countries: readonly QuizCountry[]
+  countries: readonly QuizCountry[],
+  limit?: number
 ): QuizSession | null {
-  const questions = buildQuizQuestions(countries);
+  const pool =
+    limit && limit > 0 && limit < countries.length
+      ? shuffle(countries).slice(0, limit)
+      : countries;
+  const questions = buildQuizQuestions(pool);
   if (questions.length === 0) return null;
 
   return {
@@ -47,6 +65,7 @@ export function createQuizSession(
     cursor: { row: 0, col: 0 },
     selectedAlpha2: null,
     correctCount: 0,
+    answers: [],
     phase: "question",
   };
 }
@@ -56,6 +75,13 @@ export function moveQuizCursor(
   direction: QuizDirection
 ): QuizSession {
   if (session.phase !== "question") return session;
+
+  const choiceCount = session.questions[session.index]?.choices.length ?? QUIZ_CHOICE_COUNT;
+  if (choiceCount <= 2) {
+    const col: 0 | 1 = direction === "left" || direction === "up" ? 0 : 1;
+    if (session.cursor.row === 0 && session.cursor.col === col) return session;
+    return { ...session, cursor: { row: 0, col } };
+  }
 
   const cursor: QuizCursor = { ...session.cursor };
   if (direction === "up") cursor.row = 0;
@@ -88,6 +114,15 @@ export function selectQuizChoice(
     cursor: { row: slot.row, col: slot.col },
     selectedAlpha2: choice.alpha2,
     correctCount: session.correctCount + (correct ? 1 : 0),
+    answers: [
+      ...session.answers,
+      {
+        promptAlpha2: question.promptAlpha2,
+        promptName: question.promptName,
+        selectedAlpha2: choice.alpha2,
+        correct,
+      },
+    ],
   };
 }
 
@@ -108,6 +143,122 @@ export function advanceQuiz(session: QuizSession): QuizSession {
     cursor: { row: 0, col: 0 },
     selectedAlpha2: null,
   };
+}
+
+const REVIEW_KNOWN_MIN = 2;
+const REVIEW_KNOWN_MAX = 3;
+
+export function missedQuizCount(session: QuizSession): number {
+  return session.answers.filter((answer) => !answer.correct).length;
+}
+
+// Rebuild the misses as two-choice questions, with 2–3 already-correct
+// countries mixed in so the round is not only the ones they missed.
+export function createMistakeReviewSession(
+  source: QuizSession,
+  pool: readonly QuizCountry[],
+  knownBank: readonly QuizCountry[] = []
+): MistakeReview | null {
+  if (source.phase !== "results" || source.answers.length === 0) return null;
+
+  const missedIds = new Set<string>();
+  const correct: QuizCountry[] = [];
+
+  source.questions.forEach((question, index) => {
+    const answer = source.answers[index];
+    if (!answer) return;
+    if (answer.correct) {
+      correct.push({
+        alpha2: question.promptAlpha2,
+        name: question.promptName,
+      });
+      return;
+    }
+    missedIds.add(question.promptAlpha2);
+  });
+
+  if (missedIds.size === 0) return null;
+
+  const bank = new Map<string, QuizCountry>();
+  for (const country of knownBank) {
+    if (!missedIds.has(country.alpha2)) bank.set(country.alpha2, country);
+  }
+  for (const country of correct) {
+    if (!missedIds.has(country.alpha2)) bank.set(country.alpha2, country);
+  }
+
+  const knownBankNext = [...bank.values()];
+  const fillers = shuffle(knownBankNext).slice(0, knownMixCount(knownBankNext.length));
+  const questions: QuizQuestion[] = [];
+
+  source.questions.forEach((question, index) => {
+    const answer = source.answers[index];
+    if (!answer || answer.correct) return;
+
+    const country = {
+      alpha2: question.promptAlpha2,
+      name: question.promptName,
+    };
+    const picked =
+      question.choices.find((choice) => choice.alpha2 === answer.selectedAlpha2) ??
+      pool.find((item) => item.alpha2 === answer.selectedAlpha2);
+    const other = otherCountry(country, pool, picked);
+    if (!other) return;
+    questions.push(pairQuestion(country, other));
+  });
+
+  for (const country of fillers) {
+    const previous = source.questions.find(
+      (question) => question.promptAlpha2 === country.alpha2
+    );
+    const distractors =
+      previous?.choices.filter((choice) => choice.alpha2 !== country.alpha2) ?? [];
+    const other = otherCountry(country, pool, shuffle(distractors)[0]);
+    if (!other) continue;
+    questions.push(pairQuestion(country, other));
+  }
+
+  if (questions.length === 0) return null;
+
+  return {
+    knownBank: knownBankNext,
+    session: {
+      questions: shuffle(questions),
+      index: 0,
+      cursor: { row: 0, col: 0 },
+      selectedAlpha2: null,
+      correctCount: 0,
+      answers: [],
+      phase: "question",
+    },
+  };
+}
+
+function knownMixCount(available: number): number {
+  if (available <= 1) return available;
+  const target = Math.random() < 0.5 ? REVIEW_KNOWN_MIN : REVIEW_KNOWN_MAX;
+  return Math.min(available, target);
+}
+
+function pairQuestion(country: QuizCountry, other: QuizCountry): QuizQuestion {
+  return {
+    promptAlpha2: country.alpha2,
+    promptName: country.name,
+    choices: shuffle([
+      { alpha2: country.alpha2, name: country.name },
+      { alpha2: other.alpha2, name: other.name },
+    ]),
+  };
+}
+
+function otherCountry(
+  country: QuizCountry,
+  pool: readonly QuizCountry[],
+  preferred?: QuizCountry
+): QuizCountry | null {
+  if (preferred && preferred.alpha2 !== country.alpha2) return preferred;
+  const candidates = pool.filter((item) => item.alpha2 !== country.alpha2);
+  return shuffle(candidates)[0] ?? null;
 }
 
 export function cursorToChoiceIndex(cursor: QuizCursor): number {

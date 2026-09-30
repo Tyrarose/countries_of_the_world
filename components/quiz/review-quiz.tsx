@@ -76,6 +76,8 @@ export function ReviewQuiz({
   const [override, setOverride] = useState<ReviewSession | null>(null);
   const session = override ?? built;
   const isQuestion = session?.phase === "question";
+  const revealed =
+    session?.phase === "question" && session.selectedAlpha2 !== null;
 
   const updateSession = useCallback(
     (change: (current: ReviewSession) => ReviewSession) => {
@@ -128,6 +130,25 @@ export function ReviewQuiz({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isQuestion, updateSession]);
 
+  useEffect(() => {
+    if (!revealed) return;
+
+    const readyAt = performance.now() + 300;
+
+    function onClick(event: MouseEvent) {
+      if (event.button !== 0) return;
+      if (performance.now() < readyAt) return;
+      updateSession((current) => advanceReview(current));
+    }
+
+    document.documentElement.classList.add("cursor-pointer");
+    window.addEventListener("click", onClick);
+    return () => {
+      document.documentElement.classList.remove("cursor-pointer");
+      window.removeEventListener("click", onClick);
+    };
+  }, [revealed, updateSession]);
+
   if (!session) {
     return <ReviewSkeleton title={title} />;
   }
@@ -154,6 +175,7 @@ export function ReviewQuiz({
 
   const answered = session.selectedAlpha2 !== null;
   const selectedCorrect = session.selectedAlpha2 === question.promptAlpha2;
+  const continueHint = reviewContinueHint(session);
   const position = reviewRoundPosition(session);
   const isLastGroup = session.groupIndex + 1 === session.groups.length;
   const mastered = reviewMasteredCount(session);
@@ -334,8 +356,8 @@ export function ReviewQuiz({
       <p className="sr-only" aria-live="polite">
         {answered
           ? selectedCorrect
-            ? "Correct"
-            : `Incorrect. The answer is ${question.promptName}.`
+            ? `Correct. ${continueHint}`
+            : `Incorrect. The answer is ${question.promptName}. ${continueHint}`
           : position.retry
             ? `Missed question ${position.current} of ${position.total}. ${prompt}`
             : `Question ${position.current} of ${position.total}. ${prompt}`}
@@ -353,20 +375,12 @@ export function ReviewQuiz({
             <Kbd>Space</Kbd> to answer
           </span>
           <span className="inline-flex items-center gap-1 whitespace-nowrap">
-            <Kbd>Enter</Kbd> for next
+            <Kbd>Enter</Kbd> to continue
           </span>
         </p>
-        <Button
-          type="button"
-          size="lg"
-          className="h-11 px-5 text-base sm:min-w-36"
-          disabled={!answered}
-          onClick={() => {
-            updateSession((current) => advanceReview(current));
-          }}
-        >
-          {reviewAdvanceLabel(session)}
-        </Button>
+        {answered ? (
+          <p className="text-sm font-medium sm:text-right">{continueHint}</p>
+        ) : null}
       </div>
     </div>
   );
@@ -450,6 +464,13 @@ function ReviewSkeleton({ title }: { title: string }) {
       </div>
     </div>
   );
+}
+
+function reviewContinueHint(session: ReviewSession): string {
+  const label = reviewAdvanceLabel(session);
+  if (label === "See results") return "Click anywhere to see results";
+  if (label === "Next group") return "Click anywhere to start the next group";
+  return "Click anywhere to continue";
 }
 
 function Kbd({ children }: { children: ReactNode }) {

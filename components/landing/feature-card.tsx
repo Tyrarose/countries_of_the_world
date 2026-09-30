@@ -9,8 +9,27 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { Feature } from "@/lib/features";
+import type { Feature, FeatureOption } from "@/lib/features";
 import { cn } from "@/lib/utils";
+
+function countryCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "country" : "countries"}`;
+}
+
+function OptionLabel({ option }: { option: FeatureOption }) {
+  if (option.countryCount == null) {
+    return option.label;
+  }
+
+  return (
+    <span className="flex min-w-0 flex-col items-center leading-tight">
+      <span>{option.label}</span>
+      <span className="text-[0.65rem] font-normal tabular-nums opacity-80">
+        {countryCountLabel(option.countryCount)}
+      </span>
+    </span>
+  );
+}
 
 type FeatureCardProps = {
   feature: Feature;
@@ -54,7 +73,7 @@ export function FeatureCard({ feature }: FeatureCardProps) {
                       "h-auto min-h-8 w-full whitespace-normal px-2 py-1.5 text-center text-xs"
                     )}
                   >
-                    {option.label}
+                    <OptionLabel option={option} />
                   </Link>
                 ) : (
                   <span
@@ -63,7 +82,7 @@ export function FeatureCard({ feature }: FeatureCardProps) {
                       "h-auto min-h-8 w-full whitespace-normal px-2 py-1.5 text-center text-xs opacity-60"
                     )}
                   >
-                    {option.label}
+                    <OptionLabel option={option} />
                   </span>
                 )}
               </li>

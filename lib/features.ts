@@ -1,7 +1,15 @@
 import type { LucideIcon } from "lucide-react";
-import { Earth, Globe2, Map } from "lucide-react";
+import { Globe2, Map } from "lucide-react";
 import { continents } from "@/lib/continents";
-import { continentQuizModes } from "@/lib/continent-quiz-modes";
+import {
+  getQuizCountries,
+  getWorldwideQuizCountries,
+  worldwideQuizSizes,
+} from "@/lib/continent-quiz";
+import {
+  continentQuizModes,
+  formatContinentQuizPrompt,
+} from "@/lib/continent-quiz-modes";
 
 export type FeatureStatus = "available" | "coming-soon";
 
@@ -9,6 +17,7 @@ export type FeatureOption = {
   id: string;
   label: string;
   href?: string;
+  countryCount?: number;
 };
 
 export type Feature = {
@@ -62,6 +71,7 @@ const continentQuizFeatures: Feature[] = continentQuizModes.map((mode) => ({
   options: continents.map((continent) => ({
     id: continent.id,
     label: continent.name,
+    countryCount: getQuizCountries(continent.id).length,
     href:
       mode.status === "available"
         ? `${mode.href}/${continent.id}`
@@ -69,18 +79,29 @@ const continentQuizFeatures: Feature[] = continentQuizModes.map((mode) => ({
   })),
 }));
 
-const worldwideFeatures: Feature[] = [
-  {
-    id: "quiz-worldwide",
-    title: "Worldwide Flag Quiz",
-    description:
-      "Challenge yourself with flags from every corner of the globe in one quiz.",
-    href: "/quiz/worldwide",
-    status: "available",
-    icon: Earth,
-    shortLabel: "Worldwide Quiz",
-  },
-];
+const worldwideCountryCount = getWorldwideQuizCountries().length;
+
+const worldwideFeatures: Feature[] = continentQuizModes
+  .filter((mode) => mode.id !== "review")
+  .map((mode) => ({
+    id: `quiz-worldwide-${mode.id}`,
+    title: formatContinentQuizPrompt(mode.prompt, "Worldwide").replace(
+      /\?$/,
+      ""
+    ),
+    description: mode.description,
+    href: `/quiz/worldwide/${mode.id}/all`,
+    status: "available" as const,
+    icon: mode.icon,
+    shortLabel:
+      mode.id === "which-country" ? "Which country" : "Which flag",
+    options: worldwideQuizSizes.map((size) => ({
+      id: size.id,
+      label: size.label,
+      href: `/quiz/worldwide/${mode.id}/${size.id}`,
+      countryCount: size.limit == null ? worldwideCountryCount : undefined,
+    })),
+  }));
 
 export const featureGroups: FeatureGroup[] = [
   {

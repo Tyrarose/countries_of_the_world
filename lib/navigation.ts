@@ -1,4 +1,5 @@
 import { continents } from "@/lib/continents";
+import { getWorldwideQuizSize, worldwideQuizSizes } from "@/lib/continent-quiz";
 import {
   formatContinentQuizPrompt,
   getContinentQuizMode,
@@ -26,7 +27,6 @@ const breadcrumbLabels: Record<string, string> = {
   "/": "Home",
   "/map": "Flag Map",
   "/continents": "World Continents",
-  "/quiz/worldwide": "Worldwide Flag Quiz",
 };
 
 export type BreadcrumbItem = {
@@ -39,7 +39,9 @@ export function getBreadcrumbs(pathname: string): BreadcrumbItem[] {
     return [{ label: "Home", href: "/" }];
   }
 
-  const quizCrumb = getContinentQuizBreadcrumb(pathname);
+  const quizCrumb =
+    getContinentQuizBreadcrumb(pathname) ??
+    getWorldwideQuizBreadcrumb(pathname);
   if (quizCrumb) {
     return [{ label: "Home", href: "/" }, quizCrumb];
   }
@@ -78,6 +80,25 @@ function getContinentQuizBreadcrumb(pathname: string): BreadcrumbItem | null {
       mode.id === "review"
         ? `Intuitive flag review in ${continent.name}`
         : formatContinentQuizPrompt(mode.prompt, continent.name),
+    href: pathname,
+  };
+}
+
+function getWorldwideQuizBreadcrumb(pathname: string): BreadcrumbItem | null {
+  const sizePattern = worldwideQuizSizes.map((size) => size.id).join("|");
+  const match = pathname.match(
+    new RegExp(
+      `^/quiz/worldwide/(which-country|which-flag)/(${sizePattern})$`
+    )
+  );
+  if (!match) return null;
+
+  const mode = getContinentQuizMode(match[1]);
+  const size = getWorldwideQuizSize(match[2]);
+  if (!mode || !size) return null;
+
+  return {
+    label: `${formatContinentQuizPrompt(mode.prompt, "Worldwide")} · ${size.label}`,
     href: pathname,
   };
 }

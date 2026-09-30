@@ -13,6 +13,23 @@ export function getQuizCountries(continentId: string): QuizCountry[] {
   return [...(countriesByContinent.get(continentId) ?? [])];
 }
 
+export const worldwideQuizSizes = [
+  { id: "15", label: "15", limit: 15 },
+  { id: "25", label: "25", limit: 25 },
+  { id: "50", label: "50", limit: 50 },
+  { id: "100", label: "100", limit: 100 },
+  { id: "200", label: "200", limit: 200 },
+  { id: "all", label: "All", limit: null },
+] as const;
+
+export type WorldwideQuizSize = (typeof worldwideQuizSizes)[number];
+
+export function getWorldwideQuizSize(
+  sizeId: string
+): WorldwideQuizSize | undefined {
+  return worldwideQuizSizes.find((size) => size.id === sizeId);
+}
+
 export function getWorldwideQuizCountries(): QuizCountry[] {
   return [...countriesByContinent.values()]
     .flat()

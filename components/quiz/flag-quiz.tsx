@@ -9,8 +9,10 @@ import { cn } from "@/lib/utils";
 import {
   QUIZ_CHOICE_SLOTS,
   advanceQuiz,
+  createMistakeReviewSession,
   createQuizSession,
   cursorToChoiceIndex,
+  missedQuizCount,
   moveQuizCursor,
   selectFocusedQuizChoice,
   selectQuizChoice,
@@ -26,24 +28,40 @@ type FlagQuizProps = {
   countries: QuizCountry[];
   mode?: FlagQuizMode;
   prompt?: string;
+  countryLimit?: number;
   exitHref?: string;
   exitLabel?: string;
 };
 
-const sessionCache = new WeakMap<readonly QuizCountry[], QuizSession>();
+type MistakeReviewState = {
+  round: number;
+  pool: QuizCountry[];
+  knownBank: QuizCountry[];
+};
+
+const sessionCache = new WeakMap<readonly QuizCountry[], Map<number, QuizSession>>();
 
 function subscribeQuizStore() {
   return () => {};
 }
 
-function readCachedQuizSession(countries: readonly QuizCountry[]): QuizSession | null {
-  const cached = sessionCache.get(countries);
+function readCachedQuizSession(
+  countries: readonly QuizCountry[],
+  countryLimit: number
+): QuizSession | null {
+  let byLimit = sessionCache.get(countries);
+  if (!byLimit) {
+    byLimit = new Map();
+    sessionCache.set(countries, byLimit);
+  }
+
+  const cached = byLimit.get(countryLimit);
   if (cached) return cached;
 
-  const created = createQuizSession(countries);
+  const created = createQuizSession(countries, countryLimit || undefined);
   if (!created) return null;
 
-  sessionCache.set(countries, created);
+  byLimit.set(countryLimit, created);
   return created;
 }
 
@@ -67,9 +85,11 @@ export function FlagQuiz({
   countries,
   mode = "flag-to-country",
   prompt,
+  countryLimit,
   exitHref = "/",
   exitLabel = "Home",
 }: FlagQuizProps) {
+  const questionCount = countryLimit && countryLimit > 0 ? countryLimit : 0;
   const questionPrompt =
     prompt ??
     (mode === "country-to-flag"
@@ -77,12 +97,16 @@ export function FlagQuiz({
       : "Which country is this flag?");
   const built = useSyncExternalStore(
     subscribeQuizStore,
-    () => readCachedQuizSession(countries),
+    () => readCachedQuizSession(countries, questionCount),
     readServerQuizSession
   );
   const [override, setOverride] = useState<QuizSession | null>(null);
+  const [mistakeReview, setMistakeReview] = useState<MistakeReviewState | null>(null);
   const session = override ?? built;
+  const reviewRound = mistakeReview?.round ?? 0;
   const isQuestion = session?.phase === "question";
+  const revealed =
+    session?.phase === "question" && session.selectedAlpha2 !== null;
 
   const updateSession = useCallback(
     (change: (current: QuizSession) => QuizSession) => {
@@ -135,11 +159,64 @@ export function FlagQuiz({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isQuestion, updateSession]);
 
+  useEffect(() => {
+    if (!revealed) return;
+
+    const readyAt = performance.now() + 300;
+
+    function onClick(event: MouseEvent) {
+      if (event.button !== 0) return;
+      if (performance.now() < readyAt) return;
+      updateSession((current) => advanceQuiz(current));
+    }
+
+    document.documentElement.classList.add("cursor-pointer");
+    window.addEventListener("click", onClick);
+    return () => {
+      document.documentElement.classList.remove("cursor-pointer");
+      window.removeEventListener("click", onClick);
+    };
+  }, [revealed, updateSession]);
+
   if (!session) {
     return <QuizSkeleton title={title} />;
   }
 
+  function playAgain() {
+    const next = createQuizSession(countries, questionCount || undefined);
+    if (!next) return;
+    setMistakeReview(null);
+    setOverride(next);
+  }
+
+  function startMistakeReview() {
+    if (!session || session.phase !== "results") return;
+
+    const pool =
+      mistakeReview?.pool ??
+      session.questions.map((question) => ({
+        alpha2: question.promptAlpha2,
+        name: question.promptName,
+      }));
+    const next = createMistakeReviewSession(
+      session,
+      pool,
+      mistakeReview?.knownBank ?? []
+    );
+    if (!next) return;
+
+    setMistakeReview({
+      round: reviewRound + 1,
+      pool,
+      knownBank: next.knownBank,
+    });
+    setOverride(next.session);
+  }
+
   if (session.phase === "results") {
+    const missed = missedQuizCount(session);
+    const cleared = reviewRound > 0 && missed === 0;
+
     return (
       <QuizResults
         title={title}
@@ -148,10 +225,11 @@ export function FlagQuiz({
         exitLabel={exitLabel}
         correctCount={session.correctCount}
         total={session.questions.length}
-        onPlayAgain={() => {
-          const next = createQuizSession(countries);
-          if (next) setOverride(next);
-        }}
+        reviewRound={reviewRound}
+        missed={missed}
+        cleared={cleared}
+        onPlayAgain={playAgain}
+        onReviewMistakes={missed > 0 ? startMistakeReview : undefined}
       />
     );
   }
@@ -166,11 +244,19 @@ export function FlagQuiz({
     ((session.index + (answered ? 1 : 0)) / session.questions.length) * 100;
   const cursorIndex = cursorToChoiceIndex(session.cursor);
 
+  const eyebrow = reviewEyebrow(reviewRound);
+  const choiceCount = question.choices.length;
+
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6" data-quiz-screen="question">
+    <div
+      className="mx-auto flex w-full max-w-3xl flex-col gap-6"
+      data-quiz-screen="question"
+      data-quiz-stage={reviewRound > 0 ? "review" : "quiz"}
+      data-quiz-round={reviewRound}
+    >
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-muted-foreground">Flag quiz</p>
+          <p className="text-sm font-medium text-muted-foreground">{eyebrow}</p>
           <h1 className="font-heading text-3xl font-bold tracking-tight">
             {title}
           </h1>
@@ -224,11 +310,13 @@ export function FlagQuiz({
         role="group"
         aria-label="Answer choices"
         aria-describedby="quiz-keys"
+        data-choice-count={choiceCount}
       >
-        {QUIZ_CHOICE_SLOTS.map((slot, index) => {
-          const choice = question.choices[index];
-          if (!choice) return null;
+        {question.choices.map((choice, index) => {
+          const slot = QUIZ_CHOICE_SLOTS[index];
+          if (!slot) return null;
 
+          const label = choiceCount === 2 ? (index === 0 ? "A" : "B") : slot.label;
           const isCursor = index === cursorIndex;
           const isCorrect = answered && choice.alpha2 === question.promptAlpha2;
           const isWrong =
@@ -243,10 +331,10 @@ export function FlagQuiz({
               tabIndex={-1}
               aria-label={
                 mode === "country-to-flag"
-                  ? `${slot.label}. ${choice.name}`
+                  ? `${label}. ${choice.name}`
                   : undefined
               }
-              data-quiz-choice={slot.label}
+              data-quiz-choice={label}
               data-cursor={isCursor ? "true" : "false"}
               data-result={isCorrect ? "correct" : isWrong ? "wrong" : "idle"}
               onClick={() => {
@@ -282,7 +370,7 @@ export function FlagQuiz({
                 )}
                 aria-hidden="true"
               >
-                {slot.label}
+                {label}
               </span>
               {mode === "country-to-flag" ? (
                 <>
@@ -318,8 +406,8 @@ export function FlagQuiz({
       <p className="sr-only" aria-live="polite">
         {answered
           ? selectedCorrect
-            ? "Correct"
-            : `Incorrect. The answer is ${question.promptName}.`
+            ? `Correct. ${isLast ? "Click anywhere to see results." : "Click anywhere to continue."}`
+            : `Incorrect. The answer is ${question.promptName}. ${isLast ? "Click anywhere to see results." : "Click anywhere to continue."}`
           : `Question ${session.index + 1} of ${session.questions.length}`}
       </p>
 
@@ -335,20 +423,14 @@ export function FlagQuiz({
             <Kbd>Space</Kbd> to answer
           </span>
           <span className="inline-flex items-center gap-1 whitespace-nowrap">
-            <Kbd>Enter</Kbd> for next
+            <Kbd>Enter</Kbd> to continue
           </span>
         </p>
-        <Button
-          type="button"
-          size="lg"
-          className="h-11 px-5 text-base sm:min-w-36"
-          disabled={!answered}
-          onClick={() => {
-            updateSession((current) => advanceQuiz(current));
-          }}
-        >
-          {isLast ? "See results" : "Next"}
-        </Button>
+        {answered ? (
+          <p className="text-sm font-medium sm:text-right">
+            {isLast ? "Click anywhere to see results" : "Click anywhere to continue"}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -361,7 +443,11 @@ function QuizResults({
   total,
   exitHref,
   exitLabel,
+  reviewRound,
+  missed,
+  cleared,
   onPlayAgain,
+  onReviewMistakes,
 }: {
   title: string;
   mode: FlagQuizMode;
@@ -369,29 +455,66 @@ function QuizResults({
   total: number;
   exitHref: string;
   exitLabel: string;
+  reviewRound: number;
+  missed: number;
+  cleared: boolean;
   onPlayAgain: () => void;
+  onReviewMistakes?: () => void;
 }) {
   const percent = total === 0 ? 0 : Math.round((correctCount / total) * 100);
+  const eyebrow = cleared ? "Review mistakes" : reviewEyebrow(reviewRound);
+  const summary = cleared
+    ? "You cleared every mistake."
+    : reviewRound > 0
+      ? `You got ${correctCount} of ${total} this round.`
+      : mode === "country-to-flag"
+        ? `You matched ${correctCount} of ${total} flags.`
+        : `You identified ${correctCount} of ${total} countries.`;
+  const detail = cleared
+    ? undefined
+    : reviewRound > 0
+      ? "Keep reviewing until this round is 100%."
+      : missed > 0
+        ? "Review the ones you missed, with two choices and a few you got right mixed in."
+        : undefined;
 
   return (
     <div
       className="mx-auto flex w-full max-w-lg flex-col items-center gap-6 py-10 text-center"
-      data-quiz-screen="results"
+      data-quiz-screen={cleared ? "cleared" : "results"}
+      data-quiz-stage={cleared ? "cleared" : reviewRound > 0 ? "review" : "quiz"}
+      data-quiz-round={reviewRound}
     >
       <div>
-        <p className="text-sm font-medium text-muted-foreground">Flag quiz</p>
+        <p className="text-sm font-medium text-muted-foreground">{eyebrow}</p>
         <h1 className="font-heading text-3xl font-bold tracking-tight">
           {title}
         </h1>
       </div>
       <p className="font-heading text-6xl font-bold tracking-tight">{percent}%</p>
-      <p className="text-lg text-muted-foreground">
-        {mode === "country-to-flag"
-          ? `You matched ${correctCount} of ${total} flags.`
-          : `You identified ${correctCount} of ${total} countries.`}
-      </p>
+      <div className="flex flex-col gap-2">
+        <p className="text-lg text-muted-foreground">{summary}</p>
+        {detail ? <p className="text-sm text-muted-foreground">{detail}</p> : null}
+      </div>
       <div className="flex flex-wrap items-center justify-center gap-3">
-        <Button type="button" size="lg" className="h-11 px-5" onClick={onPlayAgain}>
+        {onReviewMistakes ? (
+          <Button
+            type="button"
+            size="lg"
+            className="h-11 px-5"
+            data-quiz-action="review-mistakes"
+            onClick={onReviewMistakes}
+          >
+            {reviewRound === 0 ? "Review mistakes" : "Review mistakes again"}
+          </Button>
+        ) : null}
+        <Button
+          type="button"
+          size="lg"
+          variant={onReviewMistakes ? "outline" : "default"}
+          className="h-11 px-5"
+          onClick={onPlayAgain}
+        >
           Play again
         </Button>
         <Link
@@ -403,6 +526,12 @@ function QuizResults({
       </div>
     </div>
   );
+}
+
+function reviewEyebrow(round: number): string {
+  if (round <= 0) return "Flag quiz";
+  if (round === 1) return "Review mistakes";
+  return "Review mistakes again";
 }
 
 function QuizSkeleton({ title }: { title: string }) {
