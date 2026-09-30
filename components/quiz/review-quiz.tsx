@@ -5,49 +5,48 @@ import Link from "next/link";
 import { Check, X } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { getFlagUrl } from "@/lib/country-codes";
-import { cn } from "@/lib/utils";
+import type { QuizCountry, QuizDirection } from "@/lib/quiz-session";
 import {
-  QUIZ_CHOICE_SLOTS,
-  advanceQuiz,
-  createQuizSession,
-  cursorToChoiceIndex,
-  moveQuizCursor,
-  selectFocusedQuizChoice,
-  selectQuizChoice,
-  type QuizCountry,
-  type QuizDirection,
-  type QuizSession,
-} from "@/lib/quiz-session";
+  REVIEW_CHOICE_SLOTS,
+  advanceReview,
+  createReviewSession,
+  moveReviewCursor,
+  reviewAdvanceLabel,
+  reviewMasteredCount,
+  reviewRoundPosition,
+  reviewSectionPercents,
+  selectFocusedReviewChoice,
+  selectReviewChoice,
+  type ReviewSession,
+} from "@/lib/review-session";
+import { cn } from "@/lib/utils";
 
-export type FlagQuizMode = "flag-to-country" | "country-to-flag";
-
-type FlagQuizProps = {
+type ReviewQuizProps = {
   title: string;
+  continentName: string;
   countries: QuizCountry[];
-  mode?: FlagQuizMode;
-  prompt?: string;
   exitHref?: string;
   exitLabel?: string;
 };
 
-const sessionCache = new WeakMap<readonly QuizCountry[], QuizSession>();
+const sessionCache = new WeakMap<readonly QuizCountry[], ReviewSession>();
 
-function subscribeQuizStore() {
+function subscribeReviewStore() {
   return () => {};
 }
 
-function readCachedQuizSession(countries: readonly QuizCountry[]): QuizSession | null {
+function readCachedReviewSession(countries: readonly QuizCountry[]): ReviewSession | null {
   const cached = sessionCache.get(countries);
   if (cached) return cached;
 
-  const created = createQuizSession(countries);
+  const created = createReviewSession(countries);
   if (!created) return null;
 
   sessionCache.set(countries, created);
   return created;
 }
 
-function readServerQuizSession() {
+function readServerReviewSession() {
   return null;
 }
 
@@ -62,30 +61,24 @@ const DIRECTION_KEYS: Record<string, QuizDirection> = {
   KeyD: "right",
 };
 
-export function FlagQuiz({
+export function ReviewQuiz({
   title,
+  continentName,
   countries,
-  mode = "flag-to-country",
-  prompt,
   exitHref = "/",
   exitLabel = "Home",
-}: FlagQuizProps) {
-  const questionPrompt =
-    prompt ??
-    (mode === "country-to-flag"
-      ? "Which flag is this country?"
-      : "Which country is this flag?");
+}: ReviewQuizProps) {
   const built = useSyncExternalStore(
-    subscribeQuizStore,
-    () => readCachedQuizSession(countries),
-    readServerQuizSession
+    subscribeReviewStore,
+    () => readCachedReviewSession(countries),
+    readServerReviewSession
   );
-  const [override, setOverride] = useState<QuizSession | null>(null);
+  const [override, setOverride] = useState<ReviewSession | null>(null);
   const session = override ?? built;
   const isQuestion = session?.phase === "question";
 
   const updateSession = useCallback(
-    (change: (current: QuizSession) => QuizSession) => {
+    (change: (current: ReviewSession) => ReviewSession) => {
       setOverride((prev) => {
         const current = prev ?? built;
         if (!current) return prev;
@@ -108,7 +101,7 @@ export function FlagQuiz({
       if (direction) {
         event.preventDefault();
         updateSession((current) =>
-          current.phase === "question" ? moveQuizCursor(current, direction) : current
+          current.phase === "question" ? moveReviewCursor(current, direction) : current
         );
         return;
       }
@@ -117,7 +110,7 @@ export function FlagQuiz({
         if (event.repeat) return;
         event.preventDefault();
         updateSession((current) =>
-          current.phase === "question" ? selectFocusedQuizChoice(current) : current
+          current.phase === "question" ? selectFocusedReviewChoice(current) : current
         );
         return;
       }
@@ -126,7 +119,7 @@ export function FlagQuiz({
         if (event.repeat) return;
         event.preventDefault();
         updateSession((current) =>
-          current.phase === "question" ? advanceQuiz(current) : current
+          current.phase === "question" ? advanceReview(current) : current
         );
       }
     }
@@ -136,71 +129,98 @@ export function FlagQuiz({
   }, [isQuestion, updateSession]);
 
   if (!session) {
-    return <QuizSkeleton title={title} />;
+    return <ReviewSkeleton title={title} />;
   }
 
   if (session.phase === "results") {
     return (
-      <QuizResults
+      <ReviewResults
         title={title}
-        mode={mode}
         exitHref={exitHref}
         exitLabel={exitLabel}
-        correctCount={session.correctCount}
-        total={session.questions.length}
+        firstTryCorrect={session.firstTryCorrect}
+        total={session.totalCountries}
+        sections={session.groups.length}
         onPlayAgain={() => {
-          const next = createQuizSession(countries);
+          const next = createReviewSession(countries);
           if (next) setOverride(next);
         }}
       />
     );
   }
 
-  const question = session.questions[session.index];
-  if (!question) return <QuizSkeleton title={title} />;
+  const question = session.queue[session.index];
+  if (!question) return <ReviewSkeleton title={title} />;
 
   const answered = session.selectedAlpha2 !== null;
   const selectedCorrect = session.selectedAlpha2 === question.promptAlpha2;
-  const isLast = session.index + 1 === session.questions.length;
-  const progress =
-    ((session.index + (answered ? 1 : 0)) / session.questions.length) * 100;
-  const cursorIndex = cursorToChoiceIndex(session.cursor);
+  const position = reviewRoundPosition(session);
+  const isLastGroup = session.groupIndex + 1 === session.groups.length;
+  const mastered = reviewMasteredCount(session);
+  const sections = reviewSectionPercents(session);
+  const cursorIndex = session.cursor;
+  const prompt =
+    question.kind === "country-to-flag"
+      ? `Which flag is this country in ${continentName}?`
+      : `Which country is this flag in ${continentName}?`;
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6" data-quiz-screen="question">
+      <div className="flex flex-col gap-2">
+        <div
+          className="flex gap-1.5"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={session.totalCountries}
+          aria-valuenow={mastered}
+          aria-label="Review progress"
+          aria-valuetext={`Section ${session.groupIndex + 1} of ${session.groups.length}, ${session.masteredAlpha2.length} of ${session.groups[session.groupIndex]?.length ?? 0} learned in this section`}
+        >
+          {sections.map((percent, index) => (
+            <div
+              key={index}
+              className="h-2.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted"
+              data-section-index={index + 1}
+              data-section-fill={Math.round(percent)}
+            >
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-300"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+          <p>
+            Section {session.groupIndex + 1} of {session.groups.length}
+          </p>
+          <p data-review-phase={position.retry ? "retry" : "round"}>
+            {position.retry
+              ? `Missed ${position.current} of ${position.total}`
+              : `Question ${position.current} of ${position.total}`}
+          </p>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-muted-foreground">Flag quiz</p>
-          <h1 className="font-heading text-3xl font-bold tracking-tight">
-            {title}
-          </h1>
+          <p className="text-sm font-medium text-muted-foreground">Intuitive flag review</p>
+          <h1 className="font-heading text-3xl font-bold tracking-tight">{title}</h1>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {session.index + 1} / {session.questions.length}
-          <span aria-hidden="true"> · </span>
-          <span>
-            {session.correctCount} correct
-          </span>
-        </p>
       </div>
 
-      <div
-        className="h-2 overflow-hidden rounded-full bg-muted"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={session.questions.length}
-        aria-valuenow={session.index + (answered ? 1 : 0)}
-        aria-label="Quiz progress"
-      >
-        <div
-          className="h-full bg-primary transition-[width] duration-300"
-          style={{ width: `${progress}%` }}
-        />
+      <div className="flex flex-col items-center gap-1">
+        {position.retry && (
+          <p className="text-center text-sm font-medium text-amber-700 dark:text-amber-400">
+            {isLastGroup
+              ? "Answer the ones you missed to finish."
+              : "Answer the ones you missed to start the next group."}
+          </p>
+        )}
+        <p className="text-center text-lg font-medium">{prompt}</p>
       </div>
 
-      <p className="text-center text-lg font-medium">{questionPrompt}</p>
-
-      {mode === "flag-to-country" ? (
+      {question.kind === "flag-to-country" ? (
         <div className="mx-auto flex h-44 w-full max-w-xl items-center justify-center rounded-2xl border bg-muted p-5 shadow-sm sm:h-60">
           {/* eslint-disable-next-line @next/next/no-img-element -- flagcdn image, country code stays out of the alt text */}
           <img
@@ -223,18 +243,16 @@ export function FlagQuiz({
         className="grid grid-cols-2 gap-3 sm:gap-4"
         role="group"
         aria-label="Answer choices"
-        aria-describedby="quiz-keys"
+        aria-describedby="review-keys"
       >
-        {QUIZ_CHOICE_SLOTS.map((slot, index) => {
+        {REVIEW_CHOICE_SLOTS.map((slot, index) => {
           const choice = question.choices[index];
           if (!choice) return null;
 
           const isCursor = index === cursorIndex;
           const isCorrect = answered && choice.alpha2 === question.promptAlpha2;
           const isWrong =
-            answered &&
-            session.selectedAlpha2 === choice.alpha2 &&
-            !isCorrect;
+            answered && session.selectedAlpha2 === choice.alpha2 && !isCorrect;
 
           return (
             <button
@@ -242,7 +260,7 @@ export function FlagQuiz({
               type="button"
               tabIndex={-1}
               aria-label={
-                mode === "country-to-flag"
+                question.kind === "country-to-flag"
                   ? `${slot.label}. ${choice.name}`
                   : undefined
               }
@@ -250,25 +268,23 @@ export function FlagQuiz({
               data-cursor={isCursor ? "true" : "false"}
               data-result={isCorrect ? "correct" : isWrong ? "wrong" : "idle"}
               onClick={() => {
-                updateSession((current) => selectQuizChoice(current, index));
+                updateSession((current) => selectReviewChoice(current, index));
               }}
               className={cn(
-                "flex min-h-20 items-center gap-3 rounded-xl border-2 px-3 py-3 text-left transition-colors sm:px-4",
-                mode === "country-to-flag" && "justify-center",
+                "flex min-h-28 items-center gap-3 rounded-xl border-2 px-3 py-3 text-left transition-colors sm:px-4",
+                question.kind === "country-to-flag" && "justify-center",
                 !answered && "cursor-pointer hover:bg-muted",
-                !answered &&
-                  !isCursor &&
-                  "border-border bg-card",
-                !answered &&
-                  isCursor &&
-                  "border-primary bg-primary/5 ring-2 ring-primary",
+                !answered && !isCursor && "border-border bg-card",
+                !answered && isCursor && "border-primary bg-primary/5 ring-2 ring-primary",
                 isCorrect && "border-emerald-700 bg-emerald-600 text-white",
                 isWrong && "border-red-700 bg-red-600 text-white",
                 answered &&
                   !isCorrect &&
                   !isWrong &&
                   "border-border bg-card text-muted-foreground",
-                answered && isCursor && "ring-2 ring-foreground/40 ring-offset-2 ring-offset-background"
+                answered &&
+                  isCursor &&
+                  "ring-2 ring-foreground/40 ring-offset-2 ring-offset-background"
               )}
             >
               <span
@@ -284,7 +300,7 @@ export function FlagQuiz({
               >
                 {slot.label}
               </span>
-              {mode === "country-to-flag" ? (
+              {question.kind === "country-to-flag" ? (
                 <>
                   {/* eslint-disable-next-line @next/next/no-img-element -- flagcdn image, country name is in aria-label */}
                   <img
@@ -292,7 +308,7 @@ export function FlagQuiz({
                     alt=""
                     width={320}
                     height={213}
-                    className="h-12 w-auto max-w-[calc(100%-3rem)] rounded border bg-background object-contain shadow-sm sm:h-14"
+                    className="h-16 w-auto max-w-[calc(100%-3rem)] rounded border bg-background object-contain shadow-sm sm:h-24"
                   />
                   {isCorrect && <Check className="size-5 shrink-0" aria-hidden="true" />}
                   {isWrong && <X className="size-5 shrink-0" aria-hidden="true" />}
@@ -301,7 +317,7 @@ export function FlagQuiz({
                 </>
               ) : (
                 <>
-                  <span className="min-w-0 flex-1 text-sm leading-snug font-medium wrap-break-word sm:text-base">
+                  <span className="min-w-0 flex-1 text-base leading-snug font-medium wrap-break-word sm:text-lg">
                     {choice.name}
                   </span>
                   {isCorrect && <Check className="size-5 shrink-0" aria-hidden="true" />}
@@ -320,12 +336,14 @@ export function FlagQuiz({
           ? selectedCorrect
             ? "Correct"
             : `Incorrect. The answer is ${question.promptName}.`
-          : `Question ${session.index + 1} of ${session.questions.length}`}
+          : position.retry
+            ? `Missed question ${position.current} of ${position.total}. ${prompt}`
+            : `Question ${position.current} of ${position.total}. ${prompt}`}
       </p>
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <p
-          id="quiz-keys"
+          id="review-keys"
           className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
         >
           <span className="inline-flex items-center gap-1 whitespace-nowrap">
@@ -344,51 +362,62 @@ export function FlagQuiz({
           className="h-11 px-5 text-base sm:min-w-36"
           disabled={!answered}
           onClick={() => {
-            updateSession((current) => advanceQuiz(current));
+            updateSession((current) => advanceReview(current));
           }}
         >
-          {isLast ? "See results" : "Next"}
+          {reviewAdvanceLabel(session)}
         </Button>
       </div>
     </div>
   );
 }
 
-function QuizResults({
+function ReviewResults({
   title,
-  mode,
-  correctCount,
+  firstTryCorrect,
   total,
+  sections,
   exitHref,
   exitLabel,
   onPlayAgain,
 }: {
   title: string;
-  mode: FlagQuizMode;
-  correctCount: number;
+  firstTryCorrect: number;
   total: number;
+  sections: number;
   exitHref: string;
   exitLabel: string;
   onPlayAgain: () => void;
 }) {
-  const percent = total === 0 ? 0 : Math.round((correctCount / total) * 100);
+  const percent = total === 0 ? 0 : Math.round((firstTryCorrect / total) * 100);
 
   return (
     <div
       className="mx-auto flex w-full max-w-lg flex-col items-center gap-6 py-10 text-center"
       data-quiz-screen="results"
     >
+      <div
+        className="flex w-full gap-1.5"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={sections}
+        aria-valuenow={sections}
+        aria-label="Review progress"
+      >
+        {Array.from({ length: sections }, (_, index) => (
+          <div
+            key={index}
+            className="h-2.5 min-w-0 flex-1 overflow-hidden rounded-full bg-primary"
+          />
+        ))}
+      </div>
       <div>
-        <p className="text-sm font-medium text-muted-foreground">Flag quiz</p>
-        <h1 className="font-heading text-3xl font-bold tracking-tight">
-          {title}
-        </h1>
+        <p className="text-sm font-medium text-muted-foreground">Intuitive flag review</p>
+        <h1 className="font-heading text-3xl font-bold tracking-tight">{title}</h1>
       </div>
       <p className="font-heading text-6xl font-bold tracking-tight">{percent}%</p>
       <p className="text-lg text-muted-foreground">
-        {mode === "country-to-flag"
-          ? `You matched ${correctCount} of ${total} flags.`
-          : `You identified ${correctCount} of ${total} countries.`}
+        You knew {firstTryCorrect} of {total} on the first try.
       </p>
       <div className="flex flex-wrap items-center justify-center gap-3">
         <Button type="button" size="lg" className="h-11 px-5" onClick={onPlayAgain}>
@@ -405,16 +434,17 @@ function QuizResults({
   );
 }
 
-function QuizSkeleton({ title }: { title: string }) {
+function ReviewSkeleton({ title }: { title: string }) {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6" data-quiz-screen="loading">
+      <div className="h-2.5 animate-pulse rounded-full bg-muted" />
       <div>
-        <p className="text-sm font-medium text-muted-foreground">Flag quiz</p>
+        <p className="text-sm font-medium text-muted-foreground">Intuitive flag review</p>
         <h1 className="font-heading text-3xl font-bold tracking-tight">{title}</h1>
       </div>
       <div className="h-44 animate-pulse rounded-2xl bg-muted sm:h-60" />
       <div className="grid grid-cols-2 gap-3 sm:gap-4">
-        {QUIZ_CHOICE_SLOTS.map((slot) => (
+        {REVIEW_CHOICE_SLOTS.map((slot) => (
           <div key={slot.id} className="h-20 animate-pulse rounded-xl bg-muted" />
         ))}
       </div>

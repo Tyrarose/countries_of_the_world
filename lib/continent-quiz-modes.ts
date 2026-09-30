@@ -36,13 +36,13 @@ export const continentQuizModes: ContinentQuizMode[] = [
   },
   {
     id: "review",
-    title: "Review country flag",
+    title: "Intuitive flag review quiz",
     description:
-      "Review flags and countries from a continent at your own pace.",
+      "Study a continent in groups of 7, with two choices each time. Missed ones come back until you get them right.",
     href: "/quiz/continent/review",
-    status: "coming-soon",
+    status: "available",
     icon: BookOpen,
-    prompt: "",
+    prompt: "Intuitive flag review",
   },
 ];
 

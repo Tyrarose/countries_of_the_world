@@ -65,7 +65,7 @@ export function getBreadcrumbs(pathname: string): BreadcrumbItem[] {
 
 function getContinentQuizBreadcrumb(pathname: string): BreadcrumbItem | null {
   const match = pathname.match(
-    /^\/quiz\/continent\/(which-country|which-flag)\/([^/]+)$/
+    /^\/quiz\/continent\/(which-country|which-flag|review)\/([^/]+)$/
   );
   if (!match) return null;
 
@@ -74,7 +74,10 @@ function getContinentQuizBreadcrumb(pathname: string): BreadcrumbItem | null {
   if (!mode || !continent) return null;
 
   return {
-    label: formatContinentQuizPrompt(mode.prompt, continent.name),
+    label:
+      mode.id === "review"
+        ? `Intuitive flag review in ${continent.name}`
+        : formatContinentQuizPrompt(mode.prompt, continent.name),
     href: pathname,
   };
 }
